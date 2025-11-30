@@ -1209,7 +1209,7 @@ const handlers = {
     "bot": (args) => {
         if (!ensureNotResigned()) return;
         
-        const mode = (args[0] || "best").toLowerCase();
+        const mode = (args[0] || "").toLowerCase().trim();
         
         if (mode === "play" || mode === "enter") {
             const sideArg = (args[1] || "").toLowerCase();
@@ -1305,9 +1305,10 @@ const handlers = {
             print(`Bot: ${applied.san}`, "line info");
             printStatus(`Bot (depth ${botDepth})`);
             updateBoardView();
+            return;
         }
         
-        print(`Unknown bot command: ${mode}. Type 'help' for available commands. Or try "bot best" to make a bot move.`, "line err");
+        print(`Unknown bot command: "${mode}". Type 'help' for available commands.`, "line err");
     }
 };
 
