@@ -23,7 +23,7 @@ const PESTO_MG = {
     B: [[-29, 4, -82, -37, -25, -42, 7, -8], [-26, 16, -18, -13, 30, 59, 18, -47], [-16, 37, 43, 40, 35, 50, 37, -2], [-4, 5, 19, 50, 37, 37, 7, -2], [-6, 13, 13, 26, 34, 12, 10, 4], [0, 15, 15, 15, 14, 27, 18, 10], [4, 15, 16, 0, 7, 21, 33, 1], [-33, -3, -14, -21, -13, -12, -39, -21]],
     R: [[32, 42, 32, 51, 63, 9, 31, 43], [27, 32, 58, 62, 80, 67, 26, 44], [-5, 19, 26, 36, 17, 45, 61, 16], [-24, -11, 7, 26, 24, 35, -8, -20], [-36, -26, -12, -1, 9, -7, 6, -23], [-45, -25, -16, -17, 3, 0, -5, -33], [-44, -16, -20, -9, -1, 11, -6, -71], [-19, -13, 1, 17, 16, 7, -37, -26]],
     Q: [[-28, 0, 29, 12, 59, 44, 43, 45], [-24, -39, -5, 1, -16, 57, 28, 54], [-13, -17, 7, 8, 29, 56, 47, 57], [-27, -27, -16, -16, -1, 17, -2, 1], [-9, -26, -9, -10, -2, -4, 3, -3], [-14, 2, -11, -2, -5, 2, 14, 5], [-35, -8, 11, 2, 8, 15, -3, 1], [-1, -18, -9, 10, -15, -25, -31, -50]],
-    K: [[-65, 23, 16, -15, -56, -34, 2, 13], [29, -1, -20, -7, -8, -4, -38, -29], [-9, 24, 2, -16, -20, 6, 22, -22], [-17, -20, -12, -27, -30, -25, -14, -36], [-49, -1, -27, -39, -46, -44, -33, -51], [-14, -14, -22, -46, -44, -30, -15, -27], [1, 7, -8, -64, -43, -16, 9, 8], [-15, 36, 12, -54, 8, -28, 24, 14]]
+    K: [[-74, -35, -18, -18, -11, 15, 4, -17], [-12, 17, 14, 17, 17, 38, 23, 11], [10, 17, 23, 15, 20, 45, 44, 13], [-8, 22, 24, 27, 26, 33, 26, 3], [-18, -4, 21, 24, 27, 23, 9, -11], [-19, -3, 11, 21, 23, 16, 7, -9], [-27, -11, 4, 13, 14, 4, -5, -17], [-53, -34, -21, -11, -28, -14, -24, -43]]
 };
 
 const PESTO_EG = {
@@ -130,9 +130,6 @@ function isAttackedByPawn(board, r, c, color) {
     // Enemy pawns are "above" white pieces (lower r index) if they are attacking
     // White pawn at r attacks r-1, c+/-1
     // Black pawn at r attacks r+1, c+/-1
-    
-    // So if I am White at r,c, I am attacked by Black pawn if Black pawn is at r-1, c+/-1
-    // If I am Black at r,c, I am attacked by White pawn if White pawn is at r+1, c+/-1
     
     const attackRank = color === 'w' ? r - 1 : r + 1;
     if (attackRank < 0 || attackRank > 7) return false;
@@ -244,17 +241,97 @@ function evaluateBoard(board, perspectiveColor) {
     return perspectiveColor === 'w' ? score : -score;
 }
 
-// --- Opening Book ---
+// --- Extended Opening Book ---
+// Format: FEN_KEY -> [List of suggested moves]
+// FEN Key is the first 4 parts of FEN (position + turn + castling + enpassant)
 const OPENING_BOOK = {
-    "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1": ["e4", "d4", "c4", "Nf3"]
+    // 1. Start Position
+    "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq -": ["e4", "d4", "c4", "Nf3", "g3", "b3"],
+    
+    // --- Responses to 1. e4 ---
+    // Sicilian, French, Caro-Kann, e5, Pirc, Alekhine
+    "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq -": ["c5", "e5", "e6", "c6", "d6", "Nf6"],
+    
+    // --- Responses to 1. d4 ---
+    // Indian defenses, d5, Dutch
+    "rnbqkbnr/pppppppp/8/8/3P4/8/PPP1PPPP/RNBQKBNR b KQkq -": ["Nf6", "d5", "e6", "f5", "g6"],
+
+    // --- Sicilian Defense (1. e4 c5) ---
+    "rnbqkbnr/pp1ppppp/8/2p5/4P3/8/PPPP1PPP/RNBQKBNR w KQkq -": ["Nf3", "Nc3", "c3", "d4", "f4"],
+    // Open Sicilian (1. e4 c5 2. Nf3)
+    "rnbqkbnr/pp1ppppp/8/2p5/4P3/5N2/PPPP1PPP/RNBQKB1R b KQkq -": ["d6", "Nc6", "e6", "g6", "a6"],
+
+    // --- French Defense (1. e4 e6) ---
+    "rnbqkbnr/pppp1ppp/4p3/8/4P3/8/PPPP1PPP/RNBQKBNR w KQkq -": ["d4", "d3", "Nf3", "Nc3"],
+    // French Main (1. e4 e6 2. d4 d5)
+    "rnbqkbnr/pppp1ppp/4p3/3P4/4P3/8/PPP2PPP/RNBQKBNR b KQkq -": ["exd5", "Nf6", "Qxd5"], // Just Exchange logic usually handles d5 better
+
+    // --- Ruy Lopez / Italian (1. e4 e5 2. Nf3 Nc6) ---
+    "r1bqkbnr/pppp1ppp/2n5/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq -": ["Bb5", "Bc4", "d4", "Nc3", "c3"],
+    // Ruy Lopez (3. Bb5)
+    "r1bqkbnr/pppp1ppp/2n5/1B2p3/4P3/5N2/PPPP1PPP/RNBQK2R b KQkq -": ["a6", "Nf6", "d6", "f5"],
+    // Italian (3. Bc4)
+    "r1bqkbnr/pppp1ppp/2n5/2B1p3/4P3/5N2/PPPP1PPP/RNBQK2R b KQkq -": ["Bc5", "Nf6", "d6"],
+
+    // --- Queen's Gambit (1. d4 d5 2. c4) ---
+    "rnbqkbnr/ppp1pppp/8/3p4/2PP4/8/PP2PPPP/RNBQKBNR b KQkq -": ["e6", "c6", "dxc4", "Nc6", "Nf6"],
+    // QGD (2... e6)
+    "rnbqkbnr/ppp2ppp/4p3/3p4/2PP4/8/PP2PPPP/RNBQKBNR w KQkq -": ["Nc3", "Nf3", "g3"],
+    
+    // --- King's Indian Defense (1. d4 Nf6 2. c4 g6) ---
+    "rnbqkb1r/pppppppp/5n2/8/2PP4/8/PP2PPPP/RNBQKBNR b KQkq -": ["g6", "e6", "c5"],
+    "rnbqkb1r/pppppp1p/5np1/8/2PP4/8/PP2PPPP/RNBQKBNR w KQkq -": ["Nc3", "Nf3", "g3", "f3"],
+    
+    // --- Caro-Kann (1. e4 c6) ---
+    "rnbqkbnr/pp1ppppp/2p5/8/4P3/8/PPPP1PPP/RNBQKBNR w KQkq -": ["d4", "Nc3", "Nf3"],
+    
+    // --- Reti Opening (1. Nf3 d5) ---
+    "rnbqkbnr/ppp1pppp/8/3p4/8/5N2/PPPPPPPP/RNBQKB1R w KQkq -": ["c4", "d4", "g3", "b3"],
+    
+    // --- English Opening (1. c4) ---
+    "rnbqkbnr/pppppppp/8/8/2P5/8/PP1PPPPP/RNBQKBNR b KQkq -": ["e5", "Nf6", "c5", "e6", "g6"]
 };
 
 function getOpeningMove(game) {
-    const fen = game.fen();
-    if (OPENING_BOOK[fen]) {
-        const moves = OPENING_BOOK[fen];
-        return moves[Math.floor(Math.random() * moves.length)];
+    // Key uses first 4 parts to catch transpositions somewhat, ignoring move counts
+    const fenParts = game.fen().split(' ');
+    const fenKey = fenParts.slice(0, 3).join(' '); // Just position + turn + castling (En Passant can matter, but keeping it simple)
+    
+    // Try simplified key first (without en passant) to hit broad positions
+    let moves = OPENING_BOOK[fenKey];
+    
+    // If not found, try simpler key (Position + Turn)
+    if (!moves) {
+         const simpleKey = fenParts.slice(0, 2).join(' ') + ' -'; // Assume no weird castling
+         // This is a rough lookup fallback
     }
+    
+    // Actually, let's just use the manual key style defined above.
+    // The keys in OPENING_BOOK are "fen_pos turn castling -" mostly.
+    
+    // Let's iterate keys to find partial match since castling rights might change slightly in notation
+    // Or just exact match logic.
+    
+    // Better logic: standard FEN lookup
+    // My dictionary keys above are simplified "w KQkq -" style.
+    // Real game might be "w KQkq - 0 1" or "w KQkq e3 0 2"
+    
+    const currentFenBase = fenParts.slice(0, 3).join(' '); // "rnbqk... w KQkq"
+    
+    // Check direct match or loose match
+    for (const key in OPENING_BOOK) {
+        if (game.fen().startsWith(key) || currentFenBase === key) {
+            const possibleMoves = OPENING_BOOK[key];
+            const legalMoves = game.moves();
+            const validBookMoves = possibleMoves.filter(m => legalMoves.includes(m));
+            
+            if (validBookMoves.length > 0) {
+                // Weighted random? Or just random. Random is fun.
+                return validBookMoves[Math.floor(Math.random() * validBookMoves.length)];
+            }
+        }
+    }
+    
     return null;
 }
 
