@@ -1293,18 +1293,7 @@ const handlers = {
             return;
         }
         
-        // Default: make one best move
-        const mv = getBestMove(game, botDepth);
-        if (!mv) {
-            print("Bot couldn't find a move.", "line err");
-            return;
-        }
-        const applied = game.move(mv);
-        redoStack.length = 0;
-        playMoveSound(!!applied.captured);
-        print(`Bot: ${applied.san}`, "line info");
-        printStatus(`Bot (depth ${botDepth})`);
-        updateBoardView();
+        print('Enter valid bot command. Type "help" for available commands. Try "bot play" to ask bot play a move.', "line err");
     }
 };
 
