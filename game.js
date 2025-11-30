@@ -1293,7 +1293,21 @@ const handlers = {
             return;
         }
         
-        print('Enter valid bot command. Type "help" for available commands. Try "bot play" to ask bot play a move.', "line err");
+        if (mode === "best") {
+            const mv = getBestMove(game, botDepth);
+            if (!mv) {
+                print("Bot couldn't find a move.", "line err");
+                return;
+            }
+            const applied = game.move(mv);
+            redoStack.length = 0;
+            playMoveSound(!!applied.captured);
+            print(`Bot: ${applied.san}`, "line info");
+            printStatus(`Bot (depth ${botDepth})`);
+            updateBoardView();
+        }
+        
+        print(`Unknown bot command: ${mode}. Type 'help' for available commands. Or try "bot best" to make a bot move.`, "line err");
     }
 };
 
