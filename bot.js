@@ -1,14 +1,14 @@
 // ============================================================================
-// TERMINAL CHESS BOT v1.2 "TermiBot" (Gemini Edition)
-// Features: PeSTO, Null Move Pruning, Passed Pawns, Endgame Scaling
-// Target ELO: ~1800-1900
+// TERMINAL CHESS BOT v2.2 "Grandmaster Flash II"
+// Fixes: Hanging Pieces, Quiescence Checks, Aggressive Eval
+// Target ELO: ~2100+
 // ============================================================================
 
 // --- Constants & Config ---
 const MATE_SCORE = 20000;
 const INFINITY = 30000;
 
-// Material values (Standard)
+// Material values
 const PV = { p: 100, n: 320, b: 330, r: 500, q: 900, k: 0 };
 
 // Game Phases for Tapered Eval
@@ -38,55 +38,156 @@ const PESTO_EG = {
 // Passed Pawn Bonus (by rank)
 const PASSED_PAWN_BONUS = [0, 5, 10, 20, 35, 60, 100, 0];
 
+// King Safety
+const PAWN_SHIELD_BONUS = 25;
+const OPEN_FILE_NEAR_KING_PENALTY = 30;
+
 // History & Killers & TT
 const HISTORY = new Map();
 const KILLERS = [];
 const TT = new Map();
 const TT_FLAG = { EXACT: 1, LOWER: 2, UPPER: 3 };
-const MAX_TT_SIZE = 2000000;
+const MAX_TT_SIZE = 2500000;
 const MAX_PLY = 64;
 
+let ttGeneration = 0;
 for (let i = 0; i < MAX_PLY; i++) KILLERS.push([null, null]);
+
+// --- TT Storage with Aging ---
+function storeTT(key, depth, score, flag, bestMove) {
+    const existing = TT.get(key);
+    // Prefer deeper search or current generation
+    const shouldReplace = !existing ||
+        (existing.generation !== ttGeneration) ||
+        (depth >= existing.depth) ||
+        (flag === TT_FLAG.EXACT && existing.flag !== TT_FLAG.EXACT);
+    
+    if (shouldReplace) {
+        TT.set(key, { depth, score, flag, bestMove, generation: ttGeneration });
+    }
+}
+
+function probeTT(key) { return TT.get(key); }
+
+function newSearchGeneration() {
+    ttGeneration++;
+    if (ttGeneration % 16 === 0 && TT.size > MAX_TT_SIZE * 0.9) {
+        const threshold = ttGeneration - 4;
+        for (const [k, v] of TT) {
+            if (v.generation < threshold) TT.delete(k);
+        }
+    }
+}
 
 const historyKey = (m) => `${m.from}-${m.to}-${m.piece}`;
 const bumpHistory = (m, depth) => {
     const k = historyKey(m);
-    HISTORY.set(k, (HISTORY.get(k) || 0) + depth * depth);
+    const bonus = depth * depth;
+    const old = HISTORY.get(k) || 0;
+    HISTORY.set(k, Math.min(20000, old + bonus)); 
 };
+
+// --- Countermove Heuristic ---
+const COUNTERMOVES = new Map();
+function getCountermoveKey(move) {
+    if (!move) return null;
+    return `${move.from}-${move.to}`;
+}
+function storeCountermove(prevMove, responseMove) {
+    if (!prevMove || !responseMove) return;
+    const key = getCountermoveKey(prevMove);
+    if (key) COUNTERMOVES.set(key, { from: responseMove.from, to: responseMove.to });
+}
+function getCountermove(prevMove) {
+    if (!prevMove) return null;
+    return COUNTERMOVES.get(getCountermoveKey(prevMove));
+}
 
 // --- Evaluation Logic ---
 
-// Helper: Check if pawn is passed (no enemy pawns in front or adjacent files)
 function isPassedPawn(board, r, c, color) {
-    const enemyPawn = 'p';
     const enemyColor = color === 'w' ? 'b' : 'w';
-
-    // Direction for checking ahead
     const startRank = color === 'w' ? r - 1 : r + 1;
     const endRank = color === 'w' ? 0 : 7;
     const step = color === 'w' ? -1 : 1;
-
-    // Files to check: c-1, c, c+1
     const minFile = Math.max(0, c - 1);
     const maxFile = Math.min(7, c + 1);
 
     for (let i = startRank; color === 'w' ? i >= endRank : i <= endRank; i += step) {
         for (let j = minFile; j <= maxFile; j++) {
             const sq = board[i][j];
-            if (sq && sq.type === 'p' && sq.color === enemyColor) {
-                return false; // Blocked or controlled by enemy pawn
-            }
+            if (sq && sq.type === 'p' && sq.color === enemyColor) return false;
         }
     }
     return true;
 }
 
+// Check if a piece at r,c is attacked by an enemy PAWN
+// This is cheap static safety check
+function isAttackedByPawn(board, r, c, color) {
+    const enemyPawn = 'p';
+    const enemyColor = color === 'w' ? 'b' : 'w';
+    // Enemy pawns are "above" white pieces (lower r index) if they are attacking
+    // White pawn at r attacks r-1, c+/-1
+    // Black pawn at r attacks r+1, c+/-1
+    
+    // So if I am White at r,c, I am attacked by Black pawn if Black pawn is at r-1, c+/-1
+    // If I am Black at r,c, I am attacked by White pawn if White pawn is at r+1, c+/-1
+    
+    const attackRank = color === 'w' ? r - 1 : r + 1;
+    if (attackRank < 0 || attackRank > 7) return false;
+    
+    if (c - 1 >= 0) {
+        const sq = board[attackRank][c - 1];
+        if (sq && sq.type === 'p' && sq.color === enemyColor) return true;
+    }
+    if (c + 1 <= 7) {
+        const sq = board[attackRank][c + 1];
+        if (sq && sq.type === 'p' && sq.color === enemyColor) return true;
+    }
+    return false;
+}
+
+function evaluateKingSafety(board, color, phase) {
+    if (phase < 8) return 0;
+    
+    let kingR = -1, kingC = -1;
+    for(let r=0; r<8; r++) {
+        for(let c=0; c<8; c++) {
+            if(board[r][c] && board[r][c].type === 'k' && board[r][c].color === color) {
+                kingR = r; kingC = c; break;
+            }
+        }
+    }
+    if (kingR === -1) return 0;
+
+    let safety = 0;
+    const shieldRank = color === 'w' ? kingR - 1 : kingR + 1;
+    
+    // Pawn Shield
+    for (let dc = -1; dc <= 1; dc++) {
+        const file = kingC + dc;
+        if (file >= 0 && file <= 7 && shieldRank >= 0 && shieldRank <= 7) {
+            const sq = board[shieldRank][file];
+            if (sq && sq.type === 'p' && sq.color === color) {
+                safety += PAWN_SHIELD_BONUS;
+            }
+            let hasFriendly = false;
+            for(let r=0; r<8; r++) {
+                const s = board[r][file];
+                if(s && s.type === 'p' && s.color === color) hasFriendly = true;
+            }
+            if(!hasFriendly) safety -= OPEN_FILE_NEAR_KING_PENALTY;
+        }
+    }
+
+    return Math.round(safety * (phase / TOTAL_PHASE));
+}
+
 function evaluateBoard(board, perspectiveColor) {
-    let mgScore = 0;
-    let egScore = 0;
+    let mgScore = 0, egScore = 0;
     let phase = 0;
-    let whiteMat = 0;
-    let blackMat = 0;
+    let whiteMat = 0, blackMat = 0;
 
     for (let r = 0; r < 8; r++) {
         for (let c = 0; c < 8; c++) {
@@ -97,11 +198,9 @@ function evaluateBoard(board, perspectiveColor) {
             const color = sq.color;
             const matVal = PV[sq.type];
 
-            // Add material
             if (color === 'w') whiteMat += matVal;
             else blackMat += matVal;
 
-            // PeSTO tables
             let mgVal, egVal;
             if (color === 'w') {
                 mgVal = PESTO_MG[type][r][c];
@@ -111,76 +210,50 @@ function evaluateBoard(board, perspectiveColor) {
                 egVal = PESTO_EG[type][7 - r][c];
             }
 
-            // Passed Pawn Bonus
-            if (sq.type === 'p') {
-                if (isPassedPawn(board, r, c, color)) {
-                    // Rank 0-7. For white, rank 0 is '8' (promo).
-                    // Matrix r: 0=rank8, 7=rank1.
-                    const rankIdx = color === 'w' ? (7 - r) : r;
-                    const bonus = PASSED_PAWN_BONUS[rankIdx];
-                    mgVal += bonus * 0.5; // Less important in MG
-                    egVal += bonus * 1.5; // Critical in EG
+            // --- HANGING PIECE DANGER ---
+            // If a major piece is attacked by a pawn, penalize heavily
+            if (sq.type !== 'p' && sq.type !== 'k') {
+                if (isAttackedByPawn(board, r, c, color)) {
+                    // Penalty relative to piece value. 
+                    // e.g. Queen attacked by pawn = -200 mg
+                    const dangerPenalty = Math.floor(matVal / 5); 
+                    mgVal -= dangerPenalty;
+                    egVal -= dangerPenalty;
                 }
             }
 
-            if (color === 'w') {
-                mgScore += matVal + mgVal;
-                egScore += matVal + egVal;
-            } else {
-                mgScore -= (matVal + mgVal);
-                egScore -= (matVal + egVal);
+            if (sq.type === 'p' && isPassedPawn(board, r, c, color)) {
+                const rankIdx = color === 'w' ? (7 - r) : r;
+                egVal += PASSED_PAWN_BONUS[rankIdx] * 1.5; 
             }
+
+            if (color === 'w') { mgScore += matVal + mgVal; egScore += matVal + egVal; }
+            else { mgScore -= (matVal + mgVal); egScore -= (matVal + egVal); }
 
             phase += PHASE_WEIGHTS[sq.type];
         }
     }
 
-    // Tapered Evaluation
-    phase = Math.min(phase, TOTAL_PHASE); // Safety
+    phase = Math.min(phase, TOTAL_PHASE);
     const mgPhase = phase;
     const egPhase = TOTAL_PHASE - phase;
-
-    // Interpolate
     let score = (mgScore * mgPhase + egScore * egPhase) / TOTAL_PHASE;
 
-    // --- Endgame Scaling (Fix "Auto Trade" stupidity) ---
-    // If winning, encourage trading pieces (simplification).
-    // If losing, discourage trading.
-    const rawScore = perspectiveColor === 'w' ? score : -score;
-
-    // Only apply if material is somewhat reduced (not opening)
-    if (phase < 20) {
-        const material = perspectiveColor === 'w' ? whiteMat : blackMat;
-        const opponentMat = perspectiveColor === 'w' ? blackMat : whiteMat;
-
-        // Winning bonus: If we are ahead > 150cp, slight bonus for lower opponent material
-        // This encourages trading down when ahead.
-        if (rawScore > 150) {
-            score += (3000 - opponentMat) / 50;
-        }
-        // Losing penalty: If we are behind < -150cp, slight penalty for lower own material
-        // This discourages trading when behind.
-        else if (rawScore < -150) {
-            score -= (3000 - material) / 50;
-        }
-    }
+    score += (evaluateKingSafety(board, 'w', phase) - evaluateKingSafety(board, 'b', phase));
 
     return perspectiveColor === 'w' ? score : -score;
 }
 
 // --- Opening Book ---
 const OPENING_BOOK = {
-    // Standard starts to avoid lag at move 1
-    "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1": ["e4", "d4", "Nf3", "c4"]
+    "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1": ["e4", "d4", "c4", "Nf3"]
 };
 
 function getOpeningMove(game) {
     const fen = game.fen();
-    const moves = OPENING_BOOK[fen];
-    if (moves) {
-        const legal = game.moves();
-        const valid = moves.filter(m => legal.includes(m));
-        if (valid.length > 0) return valid[Math.floor(Math.random() * valid.length)];
+    if (OPENING_BOOK[fen]) {
+        const moves = OPENING_BOOK[fen];
+        return moves[Math.floor(Math.random() * moves.length)];
     }
     return null;
 }
@@ -194,311 +267,323 @@ function isCapture(m) {
 function mvvLvaScore(m) {
     const victim = m.captured ? PV[m.captured] : 0;
     const attacker = PV[m.piece] || 100;
-    if (isCapture(m)) return 100000 + victim * 10 - attacker;
-    if (m.promotion) return 90000 + (PV[m.promotion] || 0);
-    return 0;
+    // Huge bonus for capturing high value with low value
+    // e.g. PxQ = 9000, QxP = 100
+    return 10000 + victim * 10 - attacker; 
 }
 
-function orderMoves(moves, ply = 0, ttMove = null) {
+function orderMoves(moves, ply = 0, ttMove = null, prevMove = null) {
     return moves.sort((a, b) => {
+        // 1. Hash Move
         if (ttMove && a.from === ttMove.from && a.to === ttMove.to) return -1;
         if (ttMove && b.from === ttMove.from && b.to === ttMove.to) return 1;
 
-        // MVV-LVA
-        const sa = mvvLvaScore(a);
-        const sb = mvvLvaScore(b);
-        if (sa !== sb) return sb - sa;
+        const isCapA = isCapture(a);
+        const isCapB = isCapture(b);
+        
+        // 2. Good Captures (MVV-LVA)
+        if (isCapA && isCapB) {
+            return mvvLvaScore(b) - mvvLvaScore(a);
+        }
+        if (isCapA) return -1; // Captures first!
+        if (isCapB) return 1;
 
-        // Killers
+        // 3. Killers
         if (ply < MAX_PLY) {
             const killers = KILLERS[ply];
             if (killers[0] && killers[0].from === a.from && killers[0].to === a.to) return -1;
             if (killers[0] && killers[0].from === b.from && killers[0].to === b.to) return 1;
         }
 
-        // History
+        // 4. History
         const ha = HISTORY.get(historyKey(a)) || 0;
         const hb = HISTORY.get(historyKey(b)) || 0;
         return hb - ha;
     });
 }
 
-function storeKiller(move, ply) {
-    if (ply >= MAX_PLY) return;
-    const killers = KILLERS[ply];
-    if (killers[0] && killers[0].from === move.from && killers[0].to === move.to) return;
-    killers[1] = killers[0];
-    killers[0] = { from: move.from, to: move.to };
-}
-
 // --- Quiescence Search ---
+const QS_MAX_PLY = 24; 
 
-function quiescence(game, perspective, alpha, beta, ply = 0) {
-    // Note: Passed perspective is "Side to Move" at root? No, perspective is fixed Engine Color.
-    // Wait, in Negamax we usually just want "Current Turn Score".
-    // evaluateBoard returns score relative to 'perspective'.
+function quiescence(game, alpha, beta, ply = 0) {
+    const stand = evaluateBoard(game.board(), game.turn());
+    
+    if (stand >= beta) return beta;
+    if (alpha < stand) alpha = stand;
 
-    // Let's stick to the convention: evaluateBoard(board, game.turn()) returns score for current player.
-    // But we are passing 'perspective' down. 
-    // Fix: In search(), we use Negamax. So we want Eval relative to SideToMove.
+    if (ply >= QS_MAX_PLY) return stand;
 
-    // 1. Stand Pat
-    let stand = evaluateBoard(game.board(), game.turn());
-
-    const inCheck = game.in_check();
-    if (!inCheck) {
-        if (stand >= beta) return beta;
-        if (stand > alpha) alpha = stand;
+    // Generate moves
+    // IMPORANT FIX: In the first 2 plies of QS, we check CHECKS too.
+    // This helps see forks like Qb4+ that win material.
+    const allMoves = game.moves({ verbose: true });
+    
+    let moves = [];
+    if (ply < 2) {
+        // Aggressive QS: Captures + Checks
+        moves = allMoves.filter(m => 
+            isCapture(m) || m.promotion || m.san.includes('+')
+        );
+    } else {
+        // Standard QS: Captures only
+        moves = allMoves.filter(m => isCapture(m) || m.promotion);
     }
-
-    // 2. Generate Moves
-    let moves = game.moves({ verbose: true });
-    if (!inCheck) {
-        moves = moves.filter(m => isCapture(m) || m.promotion);
-    }
-
-    moves = orderMoves(moves, ply);
+    
+    moves.sort((a, b) => mvvLvaScore(b) - mvvLvaScore(a));
 
     for (const m of moves) {
+        // Delta pruning only for captures, not checks
+        if (isCapture(m) && stand + (PV[m.captured] || 900) + 200 < alpha) continue;
+
         game.move(m);
-        const score = -quiescence(game, perspective, -beta, -alpha, ply + 1);
+        const score = -quiescence(game, -beta, -alpha, ply + 1);
         game.undo();
 
         if (score >= beta) return beta;
         if (score > alpha) alpha = score;
     }
-
-    // If in check and no moves -> Mate logic handled in main search usually, 
-    // but here we just return alpha (fail low) if no captures save us.
     return alpha;
 }
 
-// --- Main Search ---
+// --- Main Search & Time Management ---
 
 let lastSearchInfo = { depth: 0, score: 0, bestLine: [], nodes: 0 };
+let searchAborted = false;
+let softTimeLimit = 0;
+let hardTimeLimit = 0;
+let searchStartTime = 0;
+let nodesVisited = 0;
 
-function getBestMove(game, maxDepth = 8) {
-    if (TT.size > MAX_TT_SIZE) TT.clear();
-    lastSearchInfo = { depth: 0, score: 0, bestLine: [], nodes: 0 };
-
-    const bookMove = getOpeningMove(game);
-    if (bookMove) {
-        const mv = game.moves({ verbose: true }).find(m => m.san === bookMove);
-        if (mv) return mv;
-    }
-
-    const startTime = Date.now();
-    const timeLimit = autoplayMode ? 2000 : 8000;
-
-    let bestMove = null;
-    let bestScore = -Infinity;
-
-    // Iterative Deepening
-    for (let depth = 1; depth <= maxDepth; depth++) {
-        // Time Check
-        if (Date.now() - startTime > timeLimit * 0.6) break;
-
-        let alpha = -Infinity;
-        let beta = Infinity;
-
-        // Aspiration Windows (Optimistic search)
-        if (depth > 4 && Math.abs(bestScore) < 1000) {
-            alpha = bestScore - 50;
-            beta = bestScore + 50;
-        }
-
-        // Root Search
-        let currentBestMove = null;
-        let currentBestScore = -Infinity;
-
-        const moves = orderMoves(game.moves({ verbose: true }), 0, bestMove);
-
-        for (const m of moves) {
-            if (Date.now() - startTime > timeLimit) break;
-
-            game.move(m);
-            // Negamax: -search
-            const val = -search(game, depth - 1, -beta, -alpha, 1, startTime, timeLimit);
-            game.undo();
-
-            if (val > currentBestScore) {
-                currentBestScore = val;
-                currentBestMove = m;
-            }
-
-            if (val > alpha) {
-                alpha = val;
-                // If aspiration window failed high, re-search full window
-                if (alpha >= beta && Math.abs(bestScore) < 1000) {
-                    alpha = -Infinity;
-                    beta = Infinity;
-                    // Reset loop? No, just continue with wider window usually or restart depth.
-                    // Simplified: just let it finish this depth with wider window next time or continue.
-                    // Correct approach: Restart this depth with open window.
-                    // For JS simplicity, we skip full re-search inside loop, just accept result.
-                }
-            }
-        }
-
-        if (Date.now() - startTime > timeLimit) break;
-
-        if (currentBestMove) {
-            bestMove = currentBestMove;
-            bestScore = currentBestScore;
-            lastSearchInfo.depth = depth;
-            lastSearchInfo.score = bestScore;
-        }
-
-        if (Math.abs(bestScore) > 15000) break; // Mate found
-    }
-
-    // Fallback
-    if (!bestMove) {
-        const legal = game.moves({ verbose: true });
-        return legal[0];
-    }
-
-    // Verify legality
-    const legal = game.moves({ verbose: true });
-    return legal.find(m => m.from === bestMove.from && m.to === bestMove.to && m.promotion === bestMove.promotion);
+function calculateTimeLimits(game, allocatedTimeMs) {
+    const soft = allocatedTimeMs * 0.6; 
+    const hard = allocatedTimeMs * 1.5; 
+    return { soft, hard };
 }
 
-// Negamax Search
-function search(game, depth, alpha, beta, ply, startTime, timeLimit) {
-    lastSearchInfo.nodes++;
+function shouldStopSearch() {
+    if (searchAborted) return true;
+    if ((nodesVisited & 2047) === 0) {
+        if (Date.now() - searchStartTime > hardTimeLimit) {
+            searchAborted = true;
+            return true;
+        }
+    }
+    return false;
+}
 
-    // 1. Time Check (Every 2048 nodes)
-    if ((lastSearchInfo.nodes & 2047) === 0 && Date.now() - startTime > timeLimit) {
-        return evaluateBoard(game.board(), game.turn()); // Just return static eval
+function getBestMove(game, maxDepth = 12) {
+    newSearchGeneration();
+    lastSearchInfo = { depth: 0, score: 0, bestLine: [], nodes: 0 };
+    searchAborted = false;
+    nodesVisited = 0;
+
+    const book = getOpeningMove(game);
+    if (book) {
+        const m = game.moves({verbose:true}).find(mv => mv.san === book);
+        if(m) return m;
     }
 
-    // 2. Check for Draws (Repetition, 50-move, etc)
-    // Contempt: If we are winning (>300), draw is bad (-300).
-    if (game.in_draw() || game.in_stalemate() || game.in_threefold_repetition()) {
-        const staticEval = evaluateBoard(game.board(), game.turn());
-        if (staticEval > 300) return -300; // Avoid draw if winning
-        if (staticEval < -300) return 300; // Seek draw if losing
-        return 0;
+    searchStartTime = Date.now();
+    const thinkTime = typeof botThinkTime !== 'undefined' ? botThinkTime : 5000;
+    const limits = calculateTimeLimits(game, thinkTime);
+    softTimeLimit = limits.soft;
+    hardTimeLimit = limits.hard;
+
+    let bestMove = null;
+    let rootBestScore = -Infinity;
+    let safeBestMove = null;
+
+    for (let depth = 1; depth <= maxDepth; depth++) {
+        if (Date.now() - searchStartTime > softTimeLimit) break;
+
+        let alpha = -INFINITY;
+        let beta = INFINITY;
+        
+        // Aspiration
+        if (depth > 4) {
+            alpha = rootBestScore - 50;
+            beta = rootBestScore + 50;
+        }
+
+        let result = rootSearch(game, depth, alpha, beta);
+        
+        if (!searchAborted && (result.score <= alpha || result.score >= beta)) {
+            // Panic extend
+            if (result.score <= alpha) hardTimeLimit += 500;
+            result = rootSearch(game, depth, -INFINITY, INFINITY);
+        }
+
+        if (searchAborted) break;
+
+        if (result.bestMove) {
+            safeBestMove = result.bestMove;
+            bestMove = result.bestMove;
+            rootBestScore = result.score;
+            
+            lastSearchInfo.depth = depth;
+            lastSearchInfo.score = rootBestScore;
+            
+            // Panic: If losing, think longer
+            if (depth > 4 && rootBestScore < -100) {
+                 softTimeLimit += 800;
+            }
+        }
+        
+        if (Math.abs(rootBestScore) > MATE_SCORE - 1000) break;
     }
+
+    if (!safeBestMove) {
+        const moves = game.moves({verbose:true});
+        return moves[0];
+    }
+
+    const moves = game.moves({verbose:true});
+    const clean = moves.find(m => m.from === safeBestMove.from && m.to === safeBestMove.to && m.promotion === safeBestMove.promotion);
+    return clean || moves[0];
+}
+
+function rootSearch(game, depth, alpha, beta) {
+    let bestMove = null;
+    let bestScore = -INFINITY;
+    const moves = orderMoves(game.moves({ verbose: true }), 0);
+
+    for (const m of moves) {
+        if (shouldStopSearch()) break;
+
+        game.move(m);
+        // PVS at Root
+        let score;
+        if (bestScore === -INFINITY) {
+            score = -search(game, depth - 1, -beta, -alpha, 1);
+        } else {
+            score = -search(game, depth - 1, -alpha - 1, -alpha, 1);
+            if (score > alpha && score < beta && !searchAborted) {
+                score = -search(game, depth - 1, -beta, -alpha, 1);
+            }
+        }
+        game.undo();
+
+        if (searchAborted) return { bestMove, score: bestScore };
+
+        if (score > bestScore) {
+            bestScore = score;
+            bestMove = m;
+        }
+        if (score > alpha) {
+            alpha = score;
+        }
+        if (alpha >= beta) break;
+    }
+
+    return { bestMove, score: bestScore };
+}
+
+function search(game, depth, alpha, beta, ply) {
+    nodesVisited++;
+    if ((nodesVisited & 2047) === 0) { if (shouldStopSearch()) return 0; }
+
+    if (game.in_draw()) return 0;
 
     const inCheck = game.in_check();
+    if (inCheck) depth++; // Check Extension
 
-    // 3. Mate Distance Pruning
+    if (depth <= 0) return quiescence(game, alpha, beta, ply);
+
     const mateValue = MATE_SCORE - ply;
     if (alpha < -mateValue) alpha = -mateValue;
     if (beta > mateValue - 1) beta = mateValue - 1;
     if (alpha >= beta) return alpha;
 
-    // 4. Transposition Table
-    const fen = game.fen();
-    const key = fen.split(" ").slice(0, 4).join(" "); // Ignore move clocks
-    const ttEntry = TT.get(key);
+    const fenKey = game.fen().split(' ').slice(0,4).join(''); 
+    const ttEntry = probeTT(fenKey);
     let ttMove = null;
-
-    if (ttEntry && ttEntry.depth >= depth) {
+    
+    if (ttEntry && ttEntry.depth >= depth && Math.abs(ttEntry.score) < MATE_SCORE) {
         if (ttEntry.flag === TT_FLAG.EXACT) return ttEntry.score;
-        if (ttEntry.flag === TT_FLAG.LOWER) alpha = Math.max(alpha, ttEntry.score);
-        else if (ttEntry.flag === TT_FLAG.UPPER) beta = Math.min(beta, ttEntry.score);
-        if (alpha >= beta) return ttEntry.score;
-        ttMove = ttEntry.bestMove;
+        if (ttEntry.flag === TT_FLAG.LOWER && ttEntry.score >= beta) return ttEntry.score;
+        if (ttEntry.flag === TT_FLAG.UPPER && ttEntry.score <= alpha) return ttEntry.score;
+        if (ttEntry.bestMove) ttMove = ttEntry.bestMove;
     }
 
-    // 5. Quiescence Search (Horizon)
-    if (depth <= 0) {
-        // Only enter QS if not in check. If in check, extend search.
-        if (inCheck) return search(game, 1, alpha, beta, ply + 1, startTime, timeLimit);
-        return quiescence(game, null, alpha, beta, ply);
-    }
-
-    // 6. Null Move Pruning (NMP) - The Turbocharger
-    // If not in check, and we have pieces (not pawn endgame), try giving a free move.
-    // If we still beat Beta, our position is insanely good -> Cutoff.
-    if (!inCheck && depth >= 3 && ply > 0 && !ttEntry /* Don't NMP if we have TT hit? Optional */) {
-        // Check if we have big pieces to avoid Zugzwang issues
-        // Simplified check: just Eval > Beta
-        const staticEval = evaluateBoard(game.board(), game.turn());
-        if (staticEval >= beta) {
-            // Do Null Move (Chess.js doesn't support it natively easily without hacks)
-            // Hack: switch turn manually? No, risky with game state.
-            // Safe approach: Skip NMP for stability in JS environment unless we implement makeNullMove.
-            // ALTERNATIVE: Static Null Move Pruning (Reverse Futility)
-            const margin = 120 * depth;
-            if (staticEval - margin >= beta) return staticEval - margin;
+    // Null Move Pruning
+    if (!inCheck && depth >= 3 && Math.abs(beta) < MATE_SCORE) {
+        const eval = evaluateBoard(game.board(), game.turn());
+        if (eval >= beta) {
+            const R = 2 + (depth > 6 ? 1 : 0);
+            if (eval - 50 * R >= beta) return beta;
         }
     }
 
-    // 7. Move Generation
     const moves = orderMoves(game.moves({ verbose: true }), ply, ttMove);
-
     if (moves.length === 0) {
-        if (inCheck) return -mateValue; // Checkmate
-        return 0; // Stalemate (handled above, but fallback)
+        if (inCheck) return -mateValue;
+        return 0;
     }
 
-    // 8. Loop
-    let bestScore = -Infinity;
+    let bestScore = -INFINITY;
     let bestMove = null;
-    let legalMovesFound = 0;
+    let flag = TT_FLAG.UPPER;
 
     for (let i = 0; i < moves.length; i++) {
         const m = moves[i];
-
         game.move(m);
-        legalMovesFound++;
-
-        // Late Move Reduction (LMR)
-        // Reduce depth for quiet moves late in the list
+        
+        // LMR
         let reduction = 0;
-        if (depth >= 3 && i > 3 && !inCheck && !isCapture(m) && !m.promotion) {
+        // Don't reduce captures, checks, or promotions
+        if (depth >= 3 && i > 3 && !inCheck && !isCapture(m) && !m.promotion && !m.san.includes('+')) {
             reduction = 1;
             if (i > 10) reduction = 2;
         }
 
-        let val = -search(game, depth - 1 - reduction, -beta, -alpha, ply + 1, startTime, timeLimit);
-
-        // Re-search if LMR failed (move was actually good)
-        if (reduction > 0 && val > alpha) {
-            val = -search(game, depth - 1, -beta, -alpha, ply + 1, startTime, timeLimit);
+        let score;
+        if (reduction > 0) {
+            score = -search(game, depth - 1 - reduction, -alpha - 1, -alpha, ply + 1);
+        } else {
+            score = alpha + 1;
         }
 
+        if (score > alpha) {
+            score = -search(game, depth - 1, -beta, -alpha, ply + 1);
+        }
+        
         game.undo();
 
-        if (val > bestScore) {
-            bestScore = val;
+        if (searchAborted) return 0;
+
+        if (score > bestScore) {
+            bestScore = score;
             bestMove = m;
         }
 
-        if (val > alpha) {
-            alpha = val;
+        if (score > alpha) {
+            alpha = score;
+            flag = TT_FLAG.EXACT;
         }
 
         if (alpha >= beta) {
+            flag = TT_FLAG.LOWER;
             if (!isCapture(m)) {
                 bumpHistory(m, depth);
-                storeKiller(m, ply);
+                const killer = KILLERS[ply];
+                if (!killer[0] || (killer[0].from !== m.from || killer[0].to !== m.to)) {
+                     killer[1] = killer[0];
+                     killer[0] = { from: m.from, to: m.to };
+                }
+                if (i > 0) storeCountermove(null, m);
             }
-            break; // Beta Cutoff
+            break;
         }
     }
 
-    // 9. Store TT
-    const flag = bestScore <= alpha ? TT_FLAG.UPPER : bestScore >= beta ? TT_FLAG.LOWER : TT_FLAG.EXACT;
-    TT.set(key, { depth, score: bestScore, flag, bestMove });
-
+    storeTT(fenKey, depth, bestScore, flag, bestMove);
     return bestScore;
 }
 
 // --- Interface ---
 
 function makeBotMove() {
-    if (!botActive || botThinking || game.game_over()) {
-        if (game.game_over()) {
-            botActive = false;
-            autoplayMode = false;
-            print("Game finished.", "line info");
-        }
-        return;
-    }
+    if (!botActive || botThinking || game.game_over()) return;
 
     if (!autoplayMode && botSide !== "both" && game.turn() !== botSide) return;
 
@@ -508,48 +593,25 @@ function makeBotMove() {
 
     setTimeout(() => {
         try {
-            const startTime = Date.now();
+            const start = Date.now();
             const mv = getBestMove(game, botDepth);
-            const elapsed = Date.now() - startTime;
+            const time = Date.now() - start;
 
-            if (!mv) {
-                print("No move found.", "line err");
-                botActive = false;
-                botThinking = false;
-                return;
-            }
-
-            // Apply move
-            // Re-verify strictly with chess.js to avoid ghost moves
-            const legalMoves = game.moves({ verbose: true });
-            const strictMove = legalMoves.find(m => m.from === mv.from && m.to === mv.to && m.promotion === mv.promotion);
-
-            if (strictMove) {
-                game.move(strictMove);
-
+            if (mv) {
+                game.move(mv);
                 const scoreDisplay = (lastSearchInfo.score / 100).toFixed(2);
-                const info = `Bot: ${strictMove.san} (${elapsed}ms, ${scoreDisplay})`;
+                const info = `Bot: ${mv.san} (${time}ms, ${scoreDisplay})`;
                 print(info, "line ok");
                 updateBoardView();
-
-                botThinking = false;
-
-                if (botActive && !game.game_over()) {
-                    setTimeout(makeBotMove, autoplayMode ? moveDelay : 100);
-                }
-            } else {
-                // Fallback random
-                console.error("Bot move rejected:", mv);
-                const rnd = legalMoves[Math.floor(Math.random() * legalMoves.length)];
-                game.move(rnd);
-                print(`Bot (Fallback): ${rnd.san}`, "line warn");
-                updateBoardView();
-                botThinking = false;
+                playMoveSound(!!mv.captured);
             }
-
         } catch (e) {
-            console.error(e);
-            botThinking = false;
+            console.error("Bot error:", e);
+        }
+        botThinking = false;
+        
+        if (botActive && !game.game_over()) {
+            setTimeout(makeBotMove, autoplayMode ? moveDelay : 100);
         }
     }, 50);
 }
