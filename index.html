@@ -28,9 +28,6 @@
                     <span class="theme-toggle-label">Dark</span>
                 </button>
             </div>
-            <nav class="chips" id="quickChips" aria-label="Quick commands">
-                <!-- Populated by JavaScript -->
-            </nav>
         </header>
 
         <!-- Main Layout -->
@@ -59,7 +56,7 @@
                                 spellcheck="false" 
                                 autocomplete="off"
                                 autocapitalize="off"
-                                placeholder="Enter command (e.g., board move e2 e4)"
+                                placeholder="Enter command (e.g., move e2 e4 or e2e4)"
                                 aria-label="Command input"
                             />
                             <div 
@@ -75,6 +72,19 @@
                             <button id="clearBtn" class="btn" type="button">Clear</button>
                         </div>
                     </div>
+                    <!-- Shortcuts moved here from header -->
+                    <div class="shortcuts-section">
+                        <div class="shortcuts-row">
+                            <span class="shortcuts-label">Shortcuts:</span>
+                            <kbd class="kbd">Enter</kbd> run
+                            <kbd class="kbd">Tab</kbd> complete
+                            <kbd class="kbd">&#8593;/&#8595;</kbd> navigate
+                            <kbd class="kbd">Esc</kbd> close
+                        </div>
+                        <nav class="chips" id="quickChips" aria-label="Quick commands">
+                            <!-- Populated by JavaScript -->
+                        </nav>
+                    </div>
                 </div>
             </section>
 
@@ -89,6 +99,10 @@
                         <!-- Future: flip board, export buttons -->
                     </div>
                 </div>
+                <!-- Opening Display -->
+                <div id="openingDisplay" class="opening-display" style="display: none;">
+                    <!-- Opening name displayed by JavaScript -->
+                </div>
                 <div id="boardContainer" class="board-container" aria-label="Chess board">
                     <!-- HTML Grid board rendered by JavaScript -->
                 </div>
@@ -101,15 +115,13 @@
         <!-- Footer -->
         <footer class="footer">
             <div class="footer-section">
-                <span>Shortcuts:</span>
-                <kbd class="kbd">Enter</kbd> run
-                <kbd class="kbd">Tab</kbd> complete
-                <kbd class="kbd">&#8593;/&#8595;</kbd> navigate
-                <kbd class="kbd">Esc</kbd> close
+                <span class="text-muted">
+                    PeSTO Evaluation | Alpha-Beta + TT | Quiescence Search
+                </span>
             </div>
             <div class="footer-section">
                 <span class="text-muted">
-                    PeSTO Evaluation | Alpha-Beta + TT | Depth 8
+                    Type 'help' for commands | 'status' for bot config
                 </span>
             </div>
         </footer>
