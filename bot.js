@@ -42,6 +42,17 @@ const PASSED_PAWN_BONUS = [0, 5, 10, 20, 35, 60, 100, 0];
 const PAWN_SHIELD_BONUS = 25;
 const OPEN_FILE_NEAR_KING_PENALTY = 30;
 
+// Development & Opening
+const CASTLING_BONUS = 50;
+const DEVELOPMENT_BONUS = 15;
+const EARLY_QUEEN_PENALTY = 30;
+
+// Endgame
+const CONNECTED_PASSERS_BONUS = [0, 0, 20, 40, 80, 160, 320, 0]; // By rank
+const PIECE_COORDINATION_BONUS = 25;
+const WINNING_ATTACK_BONUS = 100;
+const REPETITION_PENALTY = 50;
+
 // History & Killers & TT
 const HISTORY = new Map();
 const KILLERS = [];
@@ -146,8 +157,6 @@ function isAttackedByPawn(board, r, c, color) {
 }
 
 function evaluateKingSafety(board, color, phase) {
-    if (phase < 8) return 0;
-    
     let kingR = -1, kingC = -1;
     for(let r=0; r<8; r++) {
         for(let c=0; c<8; c++) {
@@ -158,10 +167,53 @@ function evaluateKingSafety(board, color, phase) {
     }
     if (kingR === -1) return 0;
 
+    const isOpening = phase > 16;
+    const isEndgame = phase <= 8;
+    
+    if (isOpening) {
+        return evaluateOpeningKingSafety(board, color, kingR, kingC);
+    } else if (isEndgame) {
+        return evaluateEndgameKingActivity(board, color, kingR, kingC, phase);
+    } else {
+        return evaluateMiddlegameKingSafety(board, color, kingR, kingC, phase);
+    }
+}
+
+function evaluateOpeningKingSafety(board, color, kingR, kingC) {
+    let safety = 0;
+    const homeRank = color === 'w' ? 7 : 0;
+    const shieldRank = color === 'w' ? kingR - 1 : kingR + 1;
+    
+    // Strong penalty for king moves in opening
+    if (kingR !== homeRank) {
+        safety -= 80; // Heavy penalty for moving king off back rank
+    }
+    
+    // Pawn Shield (more important in opening)
+    for (let dc = -1; dc <= 1; dc++) {
+        const file = kingC + dc;
+        if (file >= 0 && file <= 7 && shieldRank >= 0 && shieldRank <= 7) {
+            const sq = board[shieldRank][file];
+            if (sq && sq.type === 'p' && sq.color === color) {
+                safety += PAWN_SHIELD_BONUS * 1.5; // Increased pawn shield value
+            }
+            let hasFriendly = false;
+            for(let r=0; r<8; r++) {
+                const s = board[r][file];
+                if(s && s.type === 'p' && s.color === color) hasFriendly = true;
+            }
+            if(!hasFriendly) safety -= OPEN_FILE_NEAR_KING_PENALTY * 1.2;
+        }
+    }
+    
+    return safety;
+}
+
+function evaluateMiddlegameKingSafety(board, color, kingR, kingC, phase) {
     let safety = 0;
     const shieldRank = color === 'w' ? kingR - 1 : kingR + 1;
     
-    // Pawn Shield
+    // Standard pawn shield evaluation
     for (let dc = -1; dc <= 1; dc++) {
         const file = kingC + dc;
         if (file >= 0 && file <= 7 && shieldRank >= 0 && shieldRank <= 7) {
@@ -177,8 +229,37 @@ function evaluateKingSafety(board, color, phase) {
             if(!hasFriendly) safety -= OPEN_FILE_NEAR_KING_PENALTY;
         }
     }
-
+    
     return Math.round(safety * (phase / TOTAL_PHASE));
+}
+
+function evaluateEndgameKingActivity(board, color, kingR, kingC, phase) {
+    let activity = 0;
+    
+    // In endgame, king should be active (centralized)
+    const centerDistance = Math.abs(kingR - 3.5) + Math.abs(kingC - 3.5);
+    activity += (7 - centerDistance) * 8; // Bonus for central king
+    
+    // King should be close to pawns in endgame
+    let pawnDistance = 0;
+    let pawnCount = 0;
+    for(let r=0; r<8; r++) {
+        for(let c=0; c<8; c++) {
+            const sq = board[r][c];
+            if(sq && sq.type === 'p') {
+                const dist = Math.abs(kingR - r) + Math.abs(kingC - c);
+                if(sq.color === color) {
+                    pawnDistance += Math.max(0, 4 - dist) * 5; // Bonus for being close to own pawns
+                } else {
+                    pawnDistance += Math.max(0, 5 - dist) * 3; // Bonus for being close to enemy pawns
+                }
+                pawnCount++;
+            }
+        }
+    }
+    
+    activity += pawnCount > 0 ? pawnDistance / pawnCount : 0;
+    return Math.round(activity * ((TOTAL_PHASE - phase) / TOTAL_PHASE)); // Scale by endgame factor
 }
 
 function evaluateBoard(board, perspectiveColor) {
@@ -237,8 +318,311 @@ function evaluateBoard(board, perspectiveColor) {
     let score = (mgScore * mgPhase + egScore * egPhase) / TOTAL_PHASE;
 
     score += (evaluateKingSafety(board, 'w', phase) - evaluateKingSafety(board, 'b', phase));
+    
+    // Opening development bonuses
+    if (phase > 16) {
+        score += evaluateDevelopment(board, 'w') - evaluateDevelopment(board, 'b');
+        score += evaluateCastling(board, 'w') - evaluateCastling(board, 'b');
+    }
+    
+    // Endgame-specific evaluations
+    if (phase <= 12) {
+        score += evaluateEndgamePatterns(board, whiteMat, blackMat, phase);
+    }
 
     return perspectiveColor === 'w' ? score : -score;
+}
+
+function evaluateDevelopment(board, color) {
+    let devScore = 0;
+    const homeRank = color === 'w' ? 7 : 0;
+    const knightSquares = color === 'w' ? ['b1', 'g1'] : ['b8', 'g8'];
+    const bishopSquares = color === 'w' ? ['c1', 'f1'] : ['c8', 'f8'];
+    
+    // Check knight development
+    knightSquares.forEach(sq => {
+        const file = sq.charCodeAt(0) - 97; // a=0, b=1, etc.
+        const rank = parseInt(sq[1]) - 1;
+        const piece = board[7-rank][file]; // Convert to 0-7 indexing
+        if (!piece || piece.type !== 'n' || piece.color !== color) {
+            devScore += DEVELOPMENT_BONUS; // Bonus for developing knights
+        }
+    });
+    
+    // Check bishop development
+    bishopSquares.forEach(sq => {
+        const file = sq.charCodeAt(0) - 97;
+        const rank = parseInt(sq[1]) - 1;
+        const piece = board[7-rank][file];
+        if (!piece || piece.type !== 'b' || piece.color !== color) {
+            devScore += DEVELOPMENT_BONUS; // Bonus for developing bishops
+        }
+    });
+    
+    // Penalty for early queen development
+    const queenHomeSquare = color === 'w' ? [7, 3] : [0, 3]; // d1/d8
+    const queenPiece = board[queenHomeSquare[0]][queenHomeSquare[1]];
+    if (!queenPiece || queenPiece.type !== 'q' || queenPiece.color !== color) {
+        // Queen has moved, check if it's moved too early
+        let queenMoved = false;
+        for(let r=0; r<8; r++) {
+            for(let c=0; c<8; c++) {
+                const sq = board[r][c];
+                if(sq && sq.type === 'q' && sq.color === color) {
+                    // Check if minor pieces are still undeveloped
+                    let undevelopedPieces = 0;
+                    knightSquares.concat(bishopSquares).forEach(devSq => {
+                        const file = devSq.charCodeAt(0) - 97;
+                        const rank = parseInt(devSq[1]) - 1;
+                        const piece = board[7-rank][file];
+                        if (piece && ((piece.type === 'n') || (piece.type === 'b')) && piece.color === color) {
+                            undevelopedPieces++;
+                        }
+                    });
+                    if (undevelopedPieces >= 2) {
+                        devScore -= EARLY_QUEEN_PENALTY;
+                    }
+                    queenMoved = true;
+                    break;
+                }
+            }
+            if (queenMoved) break;
+        }
+    }
+    
+    return devScore;
+}
+
+function evaluateCastling(board, color) {
+    // This is a simplified castling check - in a real implementation
+    // you'd want to check the game state for actual castling rights
+    const kingHomeSquare = color === 'w' ? [7, 4] : [0, 4]; // e1/e8
+    const king = board[kingHomeSquare[0]][kingHomeSquare[1]];
+    
+    // If king is not on home square, assume it may have castled
+    if (!king || king.type !== 'k' || king.color !== color) {
+        // Check if king is in a castled position
+        const castledPositions = color === 'w' 
+            ? [[7, 6], [7, 2]] // g1, c1
+            : [[0, 6], [0, 2]]; // g8, c8
+            
+        for (const pos of castledPositions) {
+            const piece = board[pos[0]][pos[1]];
+            if (piece && piece.type === 'k' && piece.color === color) {
+                return CASTLING_BONUS; // Bonus for castling
+            }
+        }
+    }
+    
+    return 0;
+}
+
+function evaluateEndgamePatterns(board, whiteMat, blackMat, phase) {
+    let egScore = 0;
+    
+    // Connected passed pawns evaluation
+    egScore += evaluateConnectedPassers(board, 'w') - evaluateConnectedPassers(board, 'b');
+    
+    // Piece coordination in endgame
+    egScore += evaluatePieceCoordination(board, 'w') - evaluatePieceCoordination(board, 'b');
+    
+    // Winning attack patterns (Q+R, R+R, etc.)
+    egScore += evaluateWinningAttacks(board, 'w') - evaluateWinningAttacks(board, 'b');
+    
+    return egScore;
+}
+
+function evaluateConnectedPassers(board, color) {
+    let bonus = 0;
+    const passedPawns = [];
+    
+    // Find all passed pawns first
+    for (let r = 0; r < 8; r++) {
+        for (let c = 0; c < 8; c++) {
+            const sq = board[r][c];
+            if (sq && sq.type === 'p' && sq.color === color && isPassedPawn(board, r, c, color)) {
+                const rank = color === 'w' ? (7 - r) : r;
+                passedPawns.push({ rank, file: c, pos: [r, c] });
+            }
+        }
+    }
+    
+    // Check for connected passed pawns
+    for (let i = 0; i < passedPawns.length; i++) {
+        for (let j = i + 1; j < passedPawns.length; j++) {
+            const pawn1 = passedPawns[i];
+            const pawn2 = passedPawns[j];
+            
+            // Connected if on adjacent files
+            if (Math.abs(pawn1.file - pawn2.file) === 1) {
+                const avgRank = Math.floor((pawn1.rank + pawn2.rank) / 2);
+                const connectedBonus = CONNECTED_PASSERS_BONUS[Math.min(avgRank, 6)];
+                
+                // Extra bonus if both pawns are advanced
+                if (pawn1.rank >= 4 && pawn2.rank >= 4) {
+                    bonus += connectedBonus * 1.5;
+                } else {
+                    bonus += connectedBonus;
+                }
+            }
+        }
+    }
+    
+    return bonus;
+}
+
+function evaluatePieceCoordination(board, color) {
+    let coordination = 0;
+    const pieces = [];
+    
+    // Collect major pieces (Q, R)
+    for (let r = 0; r < 8; r++) {
+        for (let c = 0; c < 8; c++) {
+            const sq = board[r][c];
+            if (sq && sq.color === color && (sq.type === 'q' || sq.type === 'r')) {
+                pieces.push({ type: sq.type, pos: [r, c] });
+            }
+        }
+    }
+    
+    // Evaluate coordination between major pieces
+    for (let i = 0; i < pieces.length; i++) {
+        for (let j = i + 1; j < pieces.length; j++) {
+            const piece1 = pieces[i];
+            const piece2 = pieces[j];
+            
+            // Same rank or file = coordination bonus
+            if (piece1.pos[0] === piece2.pos[0] || piece1.pos[1] === piece2.pos[1]) {
+                coordination += PIECE_COORDINATION_BONUS;
+            }
+            
+            // Q+R on adjacent ranks/files = extra coordination
+            if ((piece1.type === 'q' && piece2.type === 'r') || (piece1.type === 'r' && piece2.type === 'q')) {
+                const rankDiff = Math.abs(piece1.pos[0] - piece2.pos[0]);
+                const fileDiff = Math.abs(piece1.pos[1] - piece2.pos[1]);
+                if ((rankDiff <= 2 && fileDiff === 0) || (rankDiff === 0 && fileDiff <= 2)) {
+                    coordination += PIECE_COORDINATION_BONUS / 2;
+                }
+            }
+        }
+    }
+    
+    return coordination;
+}
+
+function evaluateWinningAttacks(board, color) {
+    let attackBonus = 0;
+    
+    // Find enemy king
+    let enemyKingPos = null;
+    const enemyColor = color === 'w' ? 'b' : 'w';
+    
+    for (let r = 0; r < 8; r++) {
+        for (let c = 0; c < 8; c++) {
+            const sq = board[r][c];
+            if (sq && sq.type === 'k' && sq.color === enemyColor) {
+                enemyKingPos = [r, c];
+                break;
+            }
+        }
+    }
+    
+    if (!enemyKingPos) return 0;
+    
+    // Find our major pieces
+    const ourQueens = [];
+    const ourRooks = [];
+    
+    for (let r = 0; r < 8; r++) {
+        for (let c = 0; c < 8; c++) {
+            const sq = board[r][c];
+            if (sq && sq.color === color) {
+                if (sq.type === 'q') ourQueens.push([r, c]);
+                if (sq.type === 'r') ourRooks.push([r, c]);
+            }
+        }
+    }
+    
+    // Q+R attack patterns bonus
+    if (ourQueens.length > 0 && ourRooks.length > 0) {
+        for (const queenPos of ourQueens) {
+            for (const rookPos of ourRooks) {
+                // Both pieces attacking enemy king area = big bonus
+                if (isAttackingKingArea(queenPos, enemyKingPos) && 
+                    isAttackingKingArea(rookPos, enemyKingPos)) {
+                    attackBonus += WINNING_ATTACK_BONUS;
+                }
+                
+                // One piece close, other attacking = moderate bonus
+                else if (isAttackingKingArea(queenPos, enemyKingPos) || 
+                         isAttackingKingArea(rookPos, enemyKingPos)) {
+                    const distance = Math.abs(queenPos[0] - rookPos[0]) + Math.abs(queenPos[1] - rookPos[1]);
+                    if (distance <= 3) { // Pieces are coordinated
+                        attackBonus += WINNING_ATTACK_BONUS / 2;
+                    }
+                }
+            }
+        }
+    }
+    
+    // Double rook attacks
+    if (ourRooks.length >= 2) {
+        let attackingRooks = 0;
+        for (const rookPos of ourRooks) {
+            if (isAttackingKingArea(rookPos, enemyKingPos)) {
+                attackingRooks++;
+            }
+        }
+        if (attackingRooks >= 2) {
+            attackBonus += WINNING_ATTACK_BONUS * 0.8;
+        }
+    }
+    
+    return attackBonus;
+}
+
+function isAttackingKingArea(piecePos, kingPos) {
+    const [pr, pc] = piecePos;
+    const [kr, kc] = kingPos;
+    
+    // King area is 3x3 around king
+    const kingArea = [];
+    for (let dr = -1; dr <= 1; dr++) {
+        for (let dc = -1; dc <= 1; dc++) {
+            const nr = kr + dr;
+            const nc = kc + dc;
+            if (nr >= 0 && nr < 8 && nc >= 0 && nc < 8) {
+                kingArea.push([nr, nc]);
+            }
+        }
+    }
+    
+    // Check if piece is close to king area (within 2-3 squares)
+    for (const [ar, ac] of kingArea) {
+        const distance = Math.abs(pr - ar) + Math.abs(pc - ac);
+        if (distance <= 2) return true;
+    }
+    
+    return false;
+}
+
+// Repetition detection for search
+const positionHistory = new Map();
+
+function recordPosition(game) {
+    const fen = game.fen().split(' ').slice(0, 4).join(' '); // Position only, ignore move counters
+    const count = positionHistory.get(fen) || 0;
+    positionHistory.set(fen, count + 1);
+    return count + 1;
+}
+
+function isRepetition(game) {
+    const fen = game.fen().split(' ').slice(0, 4).join(' ');
+    return (positionHistory.get(fen) || 0) >= 2;
+}
+
+function clearPositionHistory() {
+    positionHistory.clear();
 }
 
 // --- Extended Opening Book ---
@@ -349,7 +733,7 @@ function mvvLvaScore(m) {
     return 10000 + victim * 10 - attacker; 
 }
 
-function orderMoves(moves, ply = 0, ttMove = null, prevMove = null) {
+function orderMoves(moves, ply = 0, ttMove = null, prevMove = null, gamePhase = null) {
     return moves.sort((a, b) => {
         // 1. Hash Move
         if (ttMove && a.from === ttMove.from && a.to === ttMove.to) return -1;
@@ -371,8 +755,14 @@ function orderMoves(moves, ply = 0, ttMove = null, prevMove = null) {
             if (killers[0] && killers[0].from === a.from && killers[0].to === a.to) return -1;
             if (killers[0] && killers[0].from === b.from && killers[0].to === b.to) return 1;
         }
+        
+        // 4. Penalize king moves in opening
+        if (gamePhase && gamePhase > 16) { // Opening phase
+            if (a.piece === 'k' && b.piece !== 'k') return 1; // King moves last
+            if (b.piece === 'k' && a.piece !== 'k') return -1;
+        }
 
-        // 4. History
+        // 5. History
         const ha = HISTORY.get(historyKey(a)) || 0;
         const hb = HISTORY.get(historyKey(b)) || 0;
         return hb - ha;
@@ -424,7 +814,7 @@ function quiescence(game, alpha, beta, ply = 0) {
 
 // --- Main Search & Time Management ---
 
-let lastSearchInfo = { depth: 0, score: 0, bestLine: [], nodes: 0 };
+let lastSearchInfo = { depth: 0, score: 0, bestLine: [], nodes: 0, actualDepth: 0, isBookMove: false, isRandomMove: false };
 let searchAborted = false;
 let softTimeLimit = 0;
 let hardTimeLimit = 0;
@@ -450,14 +840,19 @@ function shouldStopSearch() {
 
 function getBestMove(game, maxDepth = 12) {
     newSearchGeneration();
-    lastSearchInfo = { depth: 0, score: 0, bestLine: [], nodes: 0 };
+    clearPositionHistory(); // Clear position history for new search
+    lastSearchInfo = { depth: 0, score: 0, bestLine: [], nodes: 0, actualDepth: 0, isBookMove: false, isRandomMove: false };
     searchAborted = false;
     nodesVisited = 0;
 
     const book = getOpeningMove(game);
     if (book) {
         const m = game.moves({verbose:true}).find(mv => mv.san === book);
-        if(m) return m;
+        if(m) {
+            lastSearchInfo.isBookMove = true;
+            lastSearchInfo.actualDepth = 0;
+            return m;
+        }
     }
 
     searchStartTime = Date.now();
@@ -498,6 +893,7 @@ function getBestMove(game, maxDepth = 12) {
             rootBestScore = result.score;
             
             lastSearchInfo.depth = depth;
+            lastSearchInfo.actualDepth = depth; // Track the actual depth completed
             lastSearchInfo.score = rootBestScore;
             
             // Panic: If losing, think longer
@@ -522,7 +918,19 @@ function getBestMove(game, maxDepth = 12) {
 function rootSearch(game, depth, alpha, beta) {
     let bestMove = null;
     let bestScore = -INFINITY;
-    const moves = orderMoves(game.moves({ verbose: true }), 0);
+    
+    // Calculate game phase for move ordering
+    let phase = 0;
+    const board = game.board();
+    for (let r = 0; r < 8; r++) {
+        for (let c = 0; c < 8; c++) {
+            const sq = board[r][c];
+            if (sq) phase += PHASE_WEIGHTS[sq.type];
+        }
+    }
+    phase = Math.min(phase, TOTAL_PHASE);
+    
+    const moves = orderMoves(game.moves({ verbose: true }), 0, null, null, phase);
 
     for (const m of moves) {
         if (shouldStopSearch()) break;
@@ -560,6 +968,14 @@ function search(game, depth, alpha, beta, ply) {
     if ((nodesVisited & 2047) === 0) { if (shouldStopSearch()) return 0; }
 
     if (game.in_draw()) return 0;
+    
+    // Penalize repetition when we're ahead in material
+    if (ply > 0 && isRepetition(game)) {
+        const currentEval = evaluateBoard(game.board(), game.turn());
+        if (currentEval > 100) { // We're ahead, avoid repetition
+            return currentEval - REPETITION_PENALTY;
+        }
+    }
 
     const inCheck = game.in_check();
     if (inCheck) depth++; // Check Extension
@@ -584,14 +1000,25 @@ function search(game, depth, alpha, beta, ply) {
 
     // Null Move Pruning
     if (!inCheck && depth >= 3 && Math.abs(beta) < MATE_SCORE) {
-        const eval = evaluateBoard(game.board(), game.turn());
-        if (eval >= beta) {
+        const evalScore = evaluateBoard(game.board(), game.turn());
+        if (evalScore >= beta) {
             const R = 2 + (depth > 6 ? 1 : 0);
-            if (eval - 50 * R >= beta) return beta;
+            if (evalScore - 50 * R >= beta) return beta;
         }
     }
 
-    const moves = orderMoves(game.moves({ verbose: true }), ply, ttMove);
+    // Calculate game phase for move ordering  
+    let currentPhase = 0;
+    const currentBoard = game.board();
+    for (let r = 0; r < 8; r++) {
+        for (let c = 0; c < 8; c++) {
+            const sq = currentBoard[r][c];
+            if (sq) currentPhase += PHASE_WEIGHTS[sq.type];
+        }
+    }
+    currentPhase = Math.min(currentPhase, TOTAL_PHASE);
+    
+    const moves = orderMoves(game.moves({ verbose: true }), ply, ttMove, null, currentPhase);
     if (moves.length === 0) {
         if (inCheck) return -mateValue;
         return 0;
@@ -604,6 +1031,7 @@ function search(game, depth, alpha, beta, ply) {
     for (let i = 0; i < moves.length; i++) {
         const m = moves[i];
         game.move(m);
+        recordPosition(game); // Track position for repetition detection
         
         // LMR
         let reduction = 0;
@@ -625,6 +1053,15 @@ function search(game, depth, alpha, beta, ply) {
         }
         
         game.undo();
+        
+        // Clean up position tracking
+        const fen = game.fen().split(' ').slice(0, 4).join(' ');
+        const count = positionHistory.get(fen) || 0;
+        if (count > 1) {
+            positionHistory.set(fen, count - 1);
+        } else {
+            positionHistory.delete(fen);
+        }
 
         if (searchAborted) return 0;
 
@@ -676,8 +1113,16 @@ function makeBotMove() {
 
             if (mv) {
                 game.move(mv);
-                const scoreDisplay = (lastSearchInfo.score / 100).toFixed(2);
-                const info = `Bot: ${mv.san} (${time}ms, ${scoreDisplay})`;
+                let depthDisplay;
+                if (lastSearchInfo.isBookMove) {
+                    depthDisplay = "Book";
+                } else if (lastSearchInfo.isRandomMove) {
+                    depthDisplay = "N/A";
+                } else {
+                    depthDisplay = lastSearchInfo.actualDepth;
+                }
+                const scoreDisplay = lastSearchInfo.isBookMove || lastSearchInfo.isRandomMove ? "Book" : (lastSearchInfo.score / 100).toFixed(2);
+                const info = `Bot: ${mv.san} (${(time / 1000).toFixed(2)}s, depth: ${depthDisplay}, eval: ${scoreDisplay})`;
                 print(info, "line ok");
                 updateBoardView();
                 playMoveSound(!!mv.captured);
@@ -688,7 +1133,7 @@ function makeBotMove() {
         botThinking = false;
         
         if (botActive && !game.game_over()) {
-            setTimeout(makeBotMove, autoplayMode ? moveDelay : 100);
+            setTimeout(makeBotMove, autoplayMode ? 200 : 200);
         }
     }, 50);
 }
