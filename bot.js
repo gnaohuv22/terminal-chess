@@ -642,10 +642,11 @@ function isAttackingKingArea(piecePos, kingPos) {
 const positionHistory = Object.create(null);
 
 function getPositionKey(game) {
-    // Only position + castling + en passant matter for repetition
+    // Position + turn + castling + en passant matter for repetition
     const fen = game.fen();
     const parts = fen.split(' ');
-    return parts[0] + parts[2] + parts[3]; // position + castling + ep
+    return parts[0] + ' ' + parts[1] + ' ' + parts[2] + ' ' + parts[3]; // position + turn + castling + ep
+
 }
 
 function recordPosition(game) {
@@ -1092,11 +1093,12 @@ function getBestMove(game, maxDepth = 12) {
             if (result.score <= alpha || result.score >= beta) {
                 // Widen window and re-search
                 aspirationWindow *= 2;
+                const originalAlpha = alpha; // Save original alpha for panic extend check
                 
                 if (result.score <= alpha) {
                     alpha = -INFINITY;
                     beta = rootBestScore + aspirationWindow;
-                    if (result.score <= alpha) hardTimeLimit += 500; // Panic extend
+                    if (result.score <= originalAlpha) hardTimeLimit += 500; // Panic extend
                 } else {
                     alpha = rootBestScore - aspirationWindow;
                     beta = INFINITY;
