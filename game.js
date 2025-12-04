@@ -25,6 +25,7 @@ let resigned = false;
 let suggestPortalMounted = false;
 let backdropEl = null;
 let suggestIdx = -1; // Current suggestion selection index
+let chessBoard = null; // Chess board component instance
 
 // Bot state (shared with bot.js)
 let botActive = false;
@@ -35,20 +36,7 @@ let gameStartTime = null;
 let autoplayMode = false;
 let moveDelay = 1000;
 
-// ---- Unicode Chess Pieces ----
-const UNICODE_PIECES = {
-    white: { k: "\u2654", q: "\u2655", r: "\u2656", b: "\u2657", n: "\u2658", p: "\u2659" },
-    black: { k: "\u265A", q: "\u265B", r: "\u265C", b: "\u265D", n: "\u265E", p: "\u265F" }
-};
-
-// Fallback ASCII pieces
-const ASCII_PIECES = {
-    white: { k: "K", q: "Q", r: "R", b: "B", n: "N", p: "P" },
-    black: { k: "k", q: "q", r: "r", b: "b", n: "n", p: "p" }
-};
-
-// Use Unicode by default
-let useUnicodePieces = true;
+// Note: Chess piece definitions moved to board.js
 
 // ---- Piece Mapping ----
 const PIECE_MAP = {
@@ -134,6 +122,8 @@ const COMMANDS = [
     "turn",
     "fen",
     "pgn",
+    "import pgn <pgn_string>",
+    "import fen <fen_string>",
     "save [name]",
     "load [name]",
     "resign",
@@ -602,120 +592,12 @@ function updateThemeIcon() {
 // CHESS BOARD RENDERING (HTML Grid with Terminal Aesthetics)
 // ============================================================================
 
-function getPieceChar(piece) {
-    if (!piece) return "";
-    
-    if (useUnicodePieces) {
-        const set = piece.color === "w" ? UNICODE_PIECES.white : UNICODE_PIECES.black;
-        return set[piece.type] || "?";
-    } else {
-        const set = piece.color === "w" ? ASCII_PIECES.white : ASCII_PIECES.black;
-        return set[piece.type] || "?";
-    }
-}
-
-function getPieceColor(piece) {
-    if (!piece) return null;
-    return piece.color;
-}
-
-// Render HTML Grid Board - Terminal Style
-function renderHtmlBoard() {
-    const b = game.board();
-    const files = ["a", "b", "c", "d", "e", "f", "g", "h"];
-    
-    // Create wrapper
-    let html = '<div class="chess-board-wrapper">';
-    
-    // Board with rank labels
-    html += '<div class="board-with-ranks">';
-    
-    // Rank labels column
-    html += '<div class="rank-labels">';
-    for (let r = 0; r < 8; r++) {
-        const rank = 8 - r;
-        html += `<div class="rank-label">${rank}</div>`;
-    }
-    html += '</div>';
-    
-    // The 8x8 grid
-    html += '<div class="chess-board-grid">';
-    
-    for (let r = 0; r < 8; r++) {
-        for (let f = 0; f < 8; f++) {
-            const sq = b[r][f];
-            const piece = getPieceChar(sq);
-            const pieceColor = getPieceColor(sq);
-            const rank = 8 - r;
-            const file = files[f];
-            
-            // Determine square color (for subtle checkerboard)
-            const isLight = (r + f) % 2 === 0;
-            const sqColorClass = isLight ? "sq-light" : "sq-dark";
-            
-            // Piece color class
-            let pieceClass = "";
-            if (pieceColor === "w") {
-                pieceClass = "piece-white";
-            } else if (pieceColor === "b") {
-                pieceClass = "piece-black";
-            } else {
-                pieceClass = "sq-empty";
-            }
-            
-            html += `<div class="sq ${sqColorClass} ${pieceClass}" data-square="${file}${rank}" data-rank="${rank}" data-file="${file}">${piece}</div>`;
-        }
-    }
-    
-    html += '</div>'; // .chess-board-grid
-    html += '</div>'; // .board-with-ranks
-    
-    // File labels row
-    html += '<div class="file-labels">';
-    html += '<div class="file-label"></div>'; // Empty corner
-    for (let f = 0; f < 8; f++) {
-        html += `<div class="file-label">${files[f]}</div>`;
-    }
-    html += '</div>';
-    
-    html += '</div>'; // .chess-board-wrapper
-    
-    return html;
-}
+// Note: Board rendering functions moved to board.js component
 
 // Legacy ASCII board (kept for text output in terminal)
 function asciiBoard() {
-    const b = game.board();
-    let outStr = "";
-    
-    const cellWidth = 5;
-    const cellSep = "-".repeat(cellWidth);
-    const horizLine = "   +" + (cellSep + "+").repeat(8) + "\n";
-    
-    outStr += horizLine;
-    
-    for (let r = 0; r < 8; r++) {
-        const rankLabel = 8 - r;
-        let line = " " + rankLabel + " |";
-        
-        for (let f = 0; f < 8; f++) {
-            const sq = b[r][f];
-            const piece = sq ? getPieceChar(sq) : ".";
-            line += "  " + piece + "  |";
-        }
-        
-        outStr += line + "\n";
-        outStr += horizLine;
-    }
-    
-    const files = ["a", "b", "c", "d", "e", "f", "g", "h"];
-    let fileRow = "   ";
-    for (let i = 0; i < 8; i++) {
-        fileRow += "   " + files[i] + "  ";
-    }
-    outStr += fileRow + "\n";
-    
-    return outStr;
+    if (!chessBoard) return "Board not initialized";
+    return chessBoard.renderAsciiBoard(game);
 }
 
 // ============================================================================
@@ -935,11 +817,19 @@ const handlers = {
             "  reset / new                     - Start new game",
             "  resign                          - Resign current game",
             "",
-            "Export (auto-copies to clipboard):",
+            "Import/Export (auto-copies to clipboard):",
             "  fen                             - Show/copy FEN",
             "  pgn                             - Show/copy PGN",
+            "  import pgn <pgn_string>         - Import PGN game",
+            "  import fen <fen_string>         - Import FEN position",
             "  save [name]                     - Save to localStorage",
             "  load [name]                     - Load from localStorage",
+            "",
+            "Analysis:",
+            "  Go to analyzer.html for advanced analysis",
+            "  - Load PGN files",
+            "  - Navigate through moves",
+            "  - View opening information",
             "",
             "Bot Commands:",
             "  bot autoplay [delay]            - Bot plays both sides",
@@ -1206,6 +1096,126 @@ const handlers = {
         updateBoardView();
     },
     
+    "import": (args) => {
+        if (!ensureNotResigned()) return;
+        
+        const format = (args[0] || "").toLowerCase();
+        if (format === "pgn") {
+            const pgnString = args.slice(1).join(" ").trim();
+            if (!pgnString) {
+                print("Usage: import pgn <pgn_string>", "line err");
+                return;
+            }
+            
+            try {
+                const ChessCtor = typeof window.Chess === "function" ? window.Chess : Chess;
+                const tempGame = new ChessCtor();
+                
+                // Clean up PGN string
+                let cleanPgn = pgnString.trim();
+                
+                // Try to load PGN with fallback parsing
+                let loaded = false;
+                if (tempGame.load_pgn(cleanPgn)) {
+                    loaded = true;
+                } else {
+                    // Try parsing moves manually
+                    try {
+                        const moveSection = cleanPgn.replace(/\[[^\]]*\]/g, '').trim();
+                        const moveString = moveSection.replace(/\{[^}]*\}/g, '').replace(/;[^\n]*/g, '').trim();
+                        const moveTokens = moveString.split(/\s+/).filter(token => {
+                            return token && !token.match(/^\d+\./) && !token.match(/^(1-0|0-1|1\/2-1\/2|\*)$/);
+                        });
+                        
+                        tempGame.reset();
+                        for (const moveToken of moveTokens) {
+                            const cleanToken = moveToken.replace(/[+#?!]*$/, '');
+                            const move = tempGame.move(cleanToken);
+                            if (!move) {
+                                throw new Error(`Invalid move: ${cleanToken}`);
+                            }
+                        }
+                        loaded = true;
+                    } catch (manualError) {
+                        throw new Error(`Cannot parse PGN: ${manualError.message}`);
+                    }
+                }
+                
+                if (!loaded) {
+                    throw new Error("Invalid PGN format");
+                }
+                
+                // Clear current game state
+                game.reset();
+                redoStack.length = 0;
+                resigned = false;
+                botActive = false;
+                autoplayMode = false;
+                
+                // Load the PGN into main game
+                if (!game.load_pgn(cleanPgn)) {
+                    // Use manual parsing for main game too
+                    const moveSection = cleanPgn.replace(/\[[^\]]*\]/g, '').trim();
+                    const moveString = moveSection.replace(/\{[^}]*\}/g, '').replace(/;[^\n]*/g, '').trim();
+                    const moveTokens = moveString.split(/\s+/).filter(token => {
+                        return token && !token.match(/^\d+\./) && !token.match(/^(1-0|0-1|1\/2-1\/2|\*)$/);
+                    });
+                    
+                    for (const moveToken of moveTokens) {
+                        const cleanToken = moveToken.replace(/[+#?!]*$/, '');
+                        game.move(cleanToken);
+                    }
+                }
+                
+                print(`PGN imported successfully (${game.history().length} moves)`, "line ok");
+                printStatus("PGN imported");
+                updateBoardView();
+                
+            } catch (error) {
+                print(`Failed to import PGN: ${error.message}`, "line err");
+            }
+            return;
+        }
+        
+        if (format === "fen") {
+            const fenString = args.slice(1).join(" ").trim();
+            if (!fenString) {
+                print("Usage: import fen <fen_string>", "line err");
+                return;
+            }
+            
+            try {
+                const ChessCtor = typeof window.Chess === "function" ? window.Chess : Chess;
+                const tempGame = new ChessCtor();
+                
+                if (!tempGame.load(fenString)) {
+                    throw new Error("Invalid FEN format");
+                }
+                
+                // Clear current game state
+                redoStack.length = 0;
+                resigned = false;
+                botActive = false;
+                autoplayMode = false;
+                
+                // Load the FEN
+                if (!game.load(fenString)) {
+                    throw new Error("Failed to load FEN");
+                }
+                
+                print("FEN imported successfully", "line ok");
+                printStatus("FEN imported");
+                updateBoardView();
+                
+            } catch (error) {
+                print(`Failed to import FEN: ${error.message}`, "line err");
+            }
+            return;
+        }
+        
+        print(`Unknown import format: ${format}. Use 'pgn' or 'fen'.`, "line err");
+    },
+
     "bot": (args) => {
         if (!ensureNotResigned()) return;
         
@@ -1371,7 +1381,7 @@ function dispatch(input) {
     // Direct command mapping (simplified - no "board" prefix needed)
     const directCommands = [
         "status", "help", "turn", "fen", "pgn", "reset", "new",
-        "undo", "redo", "moves", "legal", "save", "load", "move", "resign", "bot"
+        "undo", "redo", "moves", "legal", "save", "load", "move", "resign", "bot", "import"
     ];
     
     if (directCommands.includes(key)) {
@@ -1532,10 +1542,10 @@ function renderBoardPanel() {
     const container = document.getElementById("boardContainer");
     const meta = document.getElementById("boardMeta");
     const openingDisplay = document.getElementById("openingDisplay");
-    if (!container || !game) return;
+    if (!container || !game || !chessBoard) return;
     
-    // Render HTML grid board
-    container.innerHTML = renderHtmlBoard();
+    // Render using ChessBoard component
+    chessBoard.render(container, game);
     
     const opening = detectOpening();
     const turn = game.turn() === "w" ? "White" : "Black";
@@ -1640,6 +1650,17 @@ function initApp() {
     
     if (!ChessCtor) {
         print("chess.js failed to load. Check network/CDN.", "line err");
+        return;
+    }
+    
+    // Initialize ChessBoard component
+    if (typeof ChessBoard !== 'undefined') {
+        chessBoard = new ChessBoard({
+            useUnicodePieces: true,
+            interactive: false
+        });
+    } else {
+        print("ChessBoard component failed to load.", "line err");
         return;
     }
     

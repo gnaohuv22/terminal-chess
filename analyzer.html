@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content="Chess Game Analyzer - View and analyze PGN games" />
+    <title>Chess Analyzer</title>
+    
+    <!-- Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet" />
+    
+    <!-- Stylesheet -->
+    <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+    <div class="app analyzer-app">
+        <!-- Header -->
+        <header class="header">
+            <div class="header-left">
+                <div class="title">
+                    <span class="title-icon">&#9819;</span>
+                    Chess Analyzer
+                </div>
+                <button id="themeToggle" class="theme-toggle" type="button" aria-label="Toggle theme">
+                    <span class="theme-toggle-icon">&#127769;</span>
+                    <span class="theme-toggle-label">Dark</span>
+                </button>
+            </div>
+            <nav class="header-nav">
+                <a href="index.html" class="nav-link">Play</a>
+                <a href="analyzer.html" class="nav-link active">Analyze</a>
+            </nav>
+        </header>
+
+        <!-- Main Layout -->
+        <main class="analyzer-layout">
+            <!-- Control Panel -->
+            <section class="control-panel">
+                <div class="import-section">
+                    <h3>Import Game</h3>
+                    <div class="import-methods">
+                        <div class="import-method">
+                            <label for="pgnInput">Paste PGN:</label>
+                            <textarea 
+                                id="pgnInput" 
+                                class="pgn-input" 
+                                placeholder="1. e4 e5 2. Nf3 Nc6 3. Bb5 a6..."
+                                rows="4"
+                            ></textarea>
+                            <button id="loadPgnBtn" class="btn btn-primary">Load PGN</button>
+                        </div>
+                        
+                        <div class="import-method">
+                            <label for="fenInput">Paste FEN:</label>
+                            <input 
+                                id="fenInput" 
+                                class="fen-input" 
+                                placeholder="rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
+                            />
+                            <button id="loadFenBtn" class="btn">Load FEN</button>
+                        </div>
+
+                        <div class="import-method">
+                            <input type="file" id="pgnFileInput" accept=".pgn" style="display: none;" />
+                            <button id="loadFileBtn" class="btn">Load PGN File</button>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="navigation-section">
+                    <h3>Navigation</h3>
+                    <div class="nav-controls">
+                        <button id="firstBtn" class="btn nav-btn" title="First move">&#9198;</button>
+                        <button id="prevBtn" class="btn nav-btn" title="Previous move">&#9664;</button>
+                        <button id="nextBtn" class="btn nav-btn" title="Next move">&#9654;</button>
+                        <button id="lastBtn" class="btn nav-btn" title="Last move">&#9197;</button>
+                    </div>
+                    <div class="move-info">
+                        <span id="moveCounter">Move: 1</span>
+                        <span id="currentMove">Starting position</span>
+                    </div>
+                </div>
+
+                <div class="game-info-section">
+                    <h3>Game Information</h3>
+                    <div id="gameMetadata" class="game-metadata">
+                        <div class="meta-item">
+                            <span class="meta-label">Event:</span>
+                            <span class="meta-value">-</span>
+                        </div>
+                        <div class="meta-item">
+                            <span class="meta-label">White:</span>
+                            <span class="meta-value">-</span>
+                        </div>
+                        <div class="meta-item">
+                            <span class="meta-label">Black:</span>
+                            <span class="meta-value">-</span>
+                        </div>
+                        <div class="meta-item">
+                            <span class="meta-label">Result:</span>
+                            <span class="meta-value">-</span>
+                        </div>
+                        <div class="meta-item">
+                            <span class="meta-label">Date:</span>
+                            <span class="meta-value">-</span>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Board Panel -->
+            <section class="board-panel">
+                <div class="board-header">
+                    <div class="board-title">
+                        <span class="board-title-icon">&#9819;</span>
+                        Position
+                    </div>
+                    <div class="board-actions">
+                        <button id="flipBtn" class="btn btn-small">Flip Board</button>
+                        <button id="exportFenBtn" class="btn btn-small">Copy FEN</button>
+                    </div>
+                </div>
+                
+                <!-- Opening Display -->
+                <div id="openingDisplay" class="opening-display" style="display: none;">
+                    <!-- Opening name displayed by JavaScript -->
+                </div>
+                
+                <div id="boardContainer" class="board-container" aria-label="Chess board">
+                    <!-- HTML Grid board rendered by JavaScript -->
+                </div>
+                
+                <div id="boardMeta" class="board-meta" aria-live="polite">
+                    Starting position
+                </div>
+            </section>
+
+            <!-- Move List Panel -->
+            <section class="movelist-panel">
+                <div class="movelist-header">
+                    <div class="movelist-title">
+                        <span class="movelist-title-icon">&#128220;</span>
+                        Move List
+                    </div>
+                    <div class="movelist-actions">
+                        <button id="copyPgnBtn" class="btn btn-small">Copy PGN</button>
+                    </div>
+                </div>
+                
+                <div id="moveList" class="move-list">
+                    <div class="empty-moves">Load a PGN to view moves</div>
+                </div>
+            </section>
+        </main>
+
+        <!-- Footer -->
+        <footer class="footer">
+            <div class="footer-section">
+                <span class="text-muted">
+                    Chess Analyzer v.1.0 | Navigate with arrow keys or click moves
+                </span>
+            </div>
+            <div class="footer-section">
+                <span class="text-muted">
+                    Load PGN games to analyze positions and move sequences
+                </span>
+            </div>
+        </footer>
+    </div>
+
+    <!-- Toast container -->
+    <div id="toastContainer" class="toast-container"></div>
+
+    <!-- Chess.js Engine -->
+    <script src="https://cdn.jsdelivr.net/npm/chess.js@0.12.0/chess.min.js"></script>
+    
+    <!-- Chess Board Component -->
+    <script src="board.js"></script>
+    
+    <!-- Analyzer Logic -->
+    <script src="analyzer.js"></script>
+</body>
+</html>
